@@ -1,7 +1,13 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
+from datetime import datetime
 from typing import List, Optional
 
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+
+# =========================================================
+# RecoverFlow AI
+# =========================================================
 
 app = FastAPI(
     title="RecoverFlow AI",
@@ -9,6 +15,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
+# =========================================================
+# Data Models
+# =========================================================
 
 class Payment(BaseModel):
     payment_id: str
@@ -22,8 +32,27 @@ class PaymentBatch(BaseModel):
     payments: List[Payment]
 
 
+class RecoveryRequest(BaseModel):
+    payment_id: str
+    action: str
+    amount: float
+    reason: str
+    retry_count: int = 0
+
+
+# =========================================================
+# Audit Log
+# =========================================================
+
+audit_log = []
+
+
+# =========================================================
+# Recovery Intelligence
+# =========================================================
+
 def get_recovery_probability(payment: Payment) -> int:
-    """Calculate recovery probability based on failure reason."""
+    """Estimate recovery probability from the payment failure reason."""
 
     reason = (payment.failure_reason or "").lower()
 
@@ -41,7 +70,10 @@ def get_recovery_probability(payment: Payment) -> int:
 def calculate_priority(amount: float, probability: int) -> float:
     """Calculate expected recoverable value."""
 
-    return round(amount * probability / 100, 2)
+    return round(
+        amount * probability / 100,
+        2
+    )
 
 
 def get_priority_level(priority_score: float) -> str:
@@ -59,14 +91,19 @@ def diagnose_payment(payment: Payment):
 
     reason = (payment.failure_reason or "").lower()
 
-    if reason in ["temporary bank issue", "network timeout"]:
+    if reason in [
+        "temporary bank issue",
+        "network timeout"
+    ]:
+
         return {
-            "diagnosis": reason or "temporary technical issue",
+            "diagnosis": reason,
             "recommended_action": "retry_payment",
             "retry_after_hours": 2
         }
 
     elif reason == "insufficient funds":
+
         return {
             "diagnosis": "insufficient funds",
             "recommended_action": "retry_payment",
@@ -74,6 +111,7 @@ def diagnose_payment(payment: Payment):
         }
 
     elif reason == "expired payment method":
+
         return {
             "diagnosis": "expired payment method",
             "recommended_action": "send_payment_link",
@@ -81,6 +119,7 @@ def diagnose_payment(payment: Payment):
         }
 
     elif reason == "repeated failure":
+
         return {
             "diagnosis": "repeated payment failure",
             "recommended_action": "manual_review",
@@ -94,75 +133,120 @@ def diagnose_payment(payment: Payment):
     }
 
 
-def get_agent_decision(payment: Payment, recommended_action: str):
+# =========================================================
+# Agent Decision
+# =========================================================
+
+def get_agent_decision(
+    payment: Payment,
+    recommended_action: str
+):
 
     max_retries = 3
 
-    # Payment does not need a retry
+    # Actions other than retry
     if recommended_action != "retry_payment":
+
         return {
             "max_retries": max_retries,
             "should_retry": False,
-            "agent_decision": f"Do not retry. Recommended action: {recommended_action}"
+            "agent_decision": (
+                f"Do not retry. Recommended action: "
+                f"{recommended_action}"
+            )
         }
 
-    # Maximum retries reached
+    # Maximum retry limit reached
     if payment.retry_count >= max_retries:
+
         return {
             "max_retries": max_retries,
             "should_retry": False,
-            "agent_decision": "Maximum retry limit reached. Send for manual review."
+            "agent_decision": (
+                "Maximum retry limit reached. "
+                "Send for manual review."
+            )
         }
 
     # Retry is allowed
     return {
         "max_retries": max_retries,
         "should_retry": True,
-        "agent_decision": f"Retry allowed. Attempt {payment.retry_count + 1} of {max_retries}."
+        "agent_decision": (
+            f"Retry allowed. "
+            f"Attempt {payment.retry_count + 1} "
+            f"of {max_retries}."
+        )
     }
 
 
+# =========================================================
+# Home
+# =========================================================
+
 @app.get("/")
 def home():
+
     return {
         "message": "Welcome to RecoverFlow AI",
         "status": "Backend is running successfully"
     }
 
 
+# =========================================================
+# Health Check
+# =========================================================
+
 @app.get("/health")
 def health_check():
+
     return {
         "status": "healthy"
     }
 
 
+# =========================================================
+# Analyze Payments
+# =========================================================
+
 @app.post("/analyze-payments")
 def analyze_payments(batch: PaymentBatch):
 
     failed_payments = [
-        payment for payment in batch.payments
+        payment
+        for payment in batch.payments
         if payment.status.lower() == "failed"
     ]
 
     revenue_at_risk = sum(
-        payment.amount for payment in failed_payments
+        payment.amount
+        for payment in failed_payments
     )
+
+    potential_recoverable_revenue = 0
 
     analyzed_payments = []
 
     for payment in failed_payments:
 
-        diagnosis_result = diagnose_payment(payment)
+        diagnosis_result = diagnose_payment(
+            payment
+        )
 
-        recovery_probability = get_recovery_probability(payment)
+        recovery_probability = get_recovery_probability(
+            payment
+        )
 
         priority_score = calculate_priority(
             payment.amount,
             recovery_probability
         )
 
-        priority_level = get_priority_level(priority_score)
+        priority_level = get_priority_level(
+            priority_score
+        )
+
+        potential_recoverable_revenue += priority_score
 
         agent_result = get_agent_decision(
             payment,
@@ -170,26 +254,219 @@ def analyze_payments(batch: PaymentBatch):
         )
 
         analyzed_payments.append({
+
             "payment_id": payment.payment_id,
+
             "amount": payment.amount,
+
             "failure_reason": payment.failure_reason,
+
             "retry_count": payment.retry_count,
+
             "recovery_probability": recovery_probability,
+
             "priority_score": priority_score,
+
             "priority_level": priority_level,
+
             **diagnosis_result,
+
             **agent_result
         })
 
-    # Highest priority payments appear first
+    # Highest-value recovery opportunities first
     analyzed_payments.sort(
         key=lambda payment: payment["priority_score"],
         reverse=True
     )
 
     return {
+
         "total_payments": len(batch.payments),
+
         "failed_payments": len(failed_payments),
-        "revenue_at_risk": revenue_at_risk,
+
+        "revenue_at_risk": round(
+            revenue_at_risk,
+            2
+        ),
+
+        "potential_recoverable_revenue": round(
+            potential_recoverable_revenue,
+            2
+        ),
+
         "recovery_analysis": analyzed_payments
+    }
+
+
+# =========================================================
+# Execute Recovery
+# =========================================================
+
+@app.post("/execute-recovery")
+def execute_recovery(
+    request: RecoveryRequest
+):
+
+    timestamp = datetime.now().isoformat()
+
+    allowed_actions = [
+        "retry_payment",
+        "send_payment_link",
+        "send_payment_reminder",
+        "manual_review"
+    ]
+
+    # -----------------------------------------------------
+    # Validate action
+    # -----------------------------------------------------
+
+    if request.action not in allowed_actions:
+
+        return {
+
+            "status": "blocked",
+
+            "payment_id": request.payment_id,
+
+            "reason": (
+                "Action is not allowed by "
+                "the recovery policy."
+            ),
+
+            "timestamp": timestamp
+        }
+
+
+    # -----------------------------------------------------
+    # Safety Rule
+    # Never retry after 3 attempts
+    # -----------------------------------------------------
+
+    if (
+        request.action == "retry_payment"
+        and request.retry_count >= 3
+    ):
+
+        audit_log.append({
+
+            "timestamp": timestamp,
+
+            "payment_id": request.payment_id,
+
+            "amount": request.amount,
+
+            "action": "manual_review",
+
+            "reason": "Maximum retry limit reached",
+
+            "status": "escalated"
+        })
+
+        return {
+
+            "status": "escalated",
+
+            "payment_id": request.payment_id,
+
+            "action": "manual_review",
+
+            "amount": request.amount,
+
+            "message": (
+                "Retry blocked because the maximum "
+                "retry limit of 3 has been reached. "
+                "Payment escalated for manual review."
+            ),
+
+            "timestamp": timestamp
+        }
+
+
+    # -----------------------------------------------------
+    # Manual Review
+    # -----------------------------------------------------
+
+    if request.action == "manual_review":
+
+        result = {
+
+            "status": "escalated",
+
+            "payment_id": request.payment_id,
+
+            "action": "manual_review",
+
+            "amount": request.amount,
+
+            "message": (
+                "Payment escalated for manual review."
+            ),
+
+            "timestamp": timestamp
+        }
+
+
+    # -----------------------------------------------------
+    # Other Recovery Actions
+    # -----------------------------------------------------
+
+    else:
+
+        result = {
+
+            "status": "executed",
+
+            "payment_id": request.payment_id,
+
+            "action": request.action,
+
+            "amount": request.amount,
+
+            "message": (
+                f"Recovery action "
+                f"'{request.action}' "
+                f"executed successfully in demo mode."
+            ),
+
+            "timestamp": timestamp
+        }
+
+
+    # -----------------------------------------------------
+    # Record Audit Log
+    # -----------------------------------------------------
+
+    audit_log.append({
+
+        "timestamp": timestamp,
+
+        "payment_id": request.payment_id,
+
+        "amount": request.amount,
+
+        "action": request.action,
+
+        "reason": request.reason,
+
+        "status": result["status"]
+    })
+
+
+    return result
+
+
+# =========================================================
+# Audit Log
+# =========================================================
+
+@app.get("/audit-log")
+def get_audit_log():
+
+    return {
+
+        "total_actions": len(audit_log),
+
+        "audit_log": audit_log
     }
